@@ -1,11 +1,10 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
 
 
-# ── Enums ────────────────────────────────────────────────────────────────────
-
+# ── Enums ─────────────────────────────────────────────────────────────────────
 class VideoStatus(str, Enum):
     UPLOADED = "uploaded"
     PROCESSING = "processing"
@@ -13,15 +12,13 @@ class VideoStatus(str, Enum):
     FAILED = "failed"
 
 
-# ── Video schemas ─────────────────────────────────────────────────────────────
-
+# ── Video ─────────────────────────────────────────────────────────────────────
 class VideoUploadResponse(BaseModel):
     id: str
     filename: str
     file_size_mb: float
     status: VideoStatus
     created_at: datetime
-
     class Config:
         from_attributes = True
 
@@ -33,13 +30,12 @@ class VideoDetail(BaseModel):
     file_size_mb: float
     duration_seconds: float
     status: VideoStatus
-    title: Optional[str]
-    speaker_name: Optional[str]
-    is_reference: bool
-    error_message: Optional[str]
+    title: Optional[str] = None
+    speaker_name: Optional[str] = None
+    is_reference: bool = False
+    error_message: Optional[str] = None
     created_at: datetime
-    processed_at: Optional[datetime]
-
+    processed_at: Optional[datetime] = None
     class Config:
         from_attributes = True
 
@@ -49,16 +45,19 @@ class VideoList(BaseModel):
     total: int
 
 
-# ── Analysis schemas ──────────────────────────────────────────────────────────
-
+# ── Score + metrics ───────────────────────────────────────────────────────────
 class ScoreBreakdown(BaseModel):
     overall: Optional[float] = None
+    content_quality: Optional[float] = None
+    structure: Optional[float] = None
+    delivery: Optional[float] = None
+    confidence: Optional[float] = None
+    emotional_presence: Optional[float] = None
+    engagement: Optional[float] = None
+    body_language: Optional[float] = None
+    professionalism: Optional[float] = None
     pace: Optional[float] = None
     clarity: Optional[float] = None
-    confidence: Optional[float] = None
-    engagement: Optional[float] = None
-    structure: Optional[float] = None
-    body_language: Optional[float] = None
 
 
 class AudioMetrics(BaseModel):
@@ -70,45 +69,122 @@ class AudioMetrics(BaseModel):
     avg_pause_duration: Optional[float] = None
     pitch_variation: Optional[float] = None
     volume_variation: Optional[float] = None
+    vocal_energy: Optional[float] = None
+    duration_seconds: Optional[float] = None
+    pace_sections: Optional[Dict[str, Any]] = None
+    hesitation_patterns: Optional[List[Dict[str, Any]]] = None
 
 
 class VisualMetrics(BaseModel):
     eye_contact_score: Optional[float] = None
     gesture_frequency: Optional[float] = None
     posture_score: Optional[float] = None
+    camera_engagement: Optional[float] = None
+    looking_away_count: Optional[int] = None
+    confidence_signal: Optional[float] = None
+    behavioral_patterns: Optional[List[str]] = None
     facial_expression_data: Optional[Dict[str, Any]] = None
 
 
+# ── Feedback sub-models (all tolerant) ────────────────────────────────────────
+class EmotionSignal(BaseModel):
+    emotion: Optional[str] = None
+    level: Optional[str] = None
+    evidence: Optional[str] = None
+
+
+class FrameworkPart(BaseModel):
+    part: Optional[str] = None
+    status: Optional[str] = None
+    observation: Optional[str] = None
+    verdict: Optional[str] = None
+
+
+class FrameworkRecommendation(BaseModel):
+    recommended: Optional[bool] = None
+    name: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class Observation(BaseModel):
+    aspect: Optional[str] = None
+    what_happened: Optional[str] = None
+    evidence: Optional[str] = None
+    why_it_matters: Optional[str] = None
+    how_to_improve: Optional[str] = None
+
+
+class MicroFeedback(BaseModel):
+    observation: Optional[str] = None
+    before: Optional[str] = None
+    after: Optional[str] = None
+
+
 class ImprovementPoint(BaseModel):
-    area: str
-    issue: str
-    tip: str
-    reference_video_id: Optional[str] = None
-    reference_timestamp: Optional[float] = None
+    area: Optional[str] = None
+    what_happened: Optional[str] = None
+    why_it_matters: Optional[str] = None
+    how_to_fix: Optional[str] = None
+    practice_exercise: Optional[str] = None
+    issue: Optional[str] = None
+    tip: Optional[str] = None
+    reference_url: Optional[str] = None
     reference_speaker: Optional[str] = None
+    reference_title: Optional[str] = None
+    reference_why: Optional[str] = None
 
 
 class ReferenceClip(BaseModel):
-    video_id: str
-    speaker: str
-    timestamp: float
-    duration: float = 30.0
-    reason: str
+    speaker: Optional[str] = None
+    title: Optional[str] = None
+    url: Optional[str] = None
+    why: Optional[str] = None
+    skill: Optional[str] = None
 
 
+class ComparisonChange(BaseModel):
+    metric: Optional[str] = None
+    change_pct: Optional[float] = None
+    direction: Optional[str] = None
+    text: Optional[str] = None
+
+
+# ── Full analysis result ──────────────────────────────────────────────────────
 class AnalysisResult(BaseModel):
     id: str
     video_id: str
     scores: ScoreBreakdown
     audio: AudioMetrics
     visual: VisualMetrics
-    transcript: Optional[str] = None
-    transcript_segments: Optional[List[Dict]] = None
+
+    content_type: Optional[str] = None
+    topic: Optional[str] = None
+    scenario: Optional[str] = None
+    framework: Optional[Dict[str, Any]] = None
+    slides_summary: Optional[str] = None
+
+    emotions: Optional[List[EmotionSignal]] = None
+
     feedback_summary: Optional[str] = None
+    overall_score_label: Optional[str] = None
+    polished_version: Optional[str] = None
+    audience_perception: Optional[str] = None
+    next_practice_topic: Optional[str] = None
+    motivational_close: Optional[str] = None
+
+    framework_breakdown: Optional[List[FrameworkPart]] = None
+    framework_recommendation: Optional[FrameworkRecommendation] = None
+    what_worked_well: Optional[List[str]] = None
+    delivery_observations: Optional[List[Observation]] = None
+    body_language_observations: Optional[List[Observation]] = None
+    emotional_presence: Optional[Dict[str, Any]] = None
+    micro_feedback: Optional[List[MicroFeedback]] = None
+    challenge_questions: Optional[List[str]] = None
     improvement_points: Optional[List[ImprovementPoint]] = None
     reference_clips: Optional[List[ReferenceClip]] = None
-    created_at: datetime
 
+    comparison: Optional[Dict[str, Any]] = None
+    created_at: datetime
     class Config:
         from_attributes = True
 
@@ -117,14 +193,13 @@ class AnalysisStartResponse(BaseModel):
     analysis_id: str
     video_id: str
     message: str
-    status: str = "processing"
 
 
-# ── Coach schemas ─────────────────────────────────────────────────────────────
-
+# ── Coach ─────────────────────────────────────────────────────────────────────
 class CoachMessage(BaseModel):
-    message: str = Field(..., min_length=1, max_length=2000)
     analysis_id: Optional[str] = None
+    video_id: Optional[str] = None
+    message: str
 
 
 class CoachResponse(BaseModel):
@@ -133,34 +208,23 @@ class CoachResponse(BaseModel):
     referenced_clips: Optional[List[ReferenceClip]] = None
 
 
-# ── Progress schemas ──────────────────────────────────────────────────────────
-
+# ── Progress ──────────────────────────────────────────────────────────────────
 class ProgressEntry(BaseModel):
     video_id: str
-    date: datetime
-    overall_score: float
-    scores: ScoreBreakdown
+    date: Optional[str] = None
+    scenario: Optional[str] = None
+    topic: Optional[str] = None
+    overall: Optional[float] = None
+    confidence: Optional[float] = None
+    body_language: Optional[float] = None
+    emotional_presence: Optional[float] = None
+    filler_word_rate: Optional[float] = None
+    eye_contact: Optional[float] = None
 
 
 class ProgressDashboard(BaseModel):
+    entries: List[ProgressEntry]
     total_sessions: int
-    avg_score: float
-    best_score: float
-    recent_sessions: List[ProgressEntry]
-    score_trend: List[Dict[str, Any]]
-
-
-# ── Pipeline schemas ──────────────────────────────────────────────────────────
-
-class PipelineIngestRequest(BaseModel):
-    video_path: str
-    speaker_name: str
-    title: Optional[str] = None
-    source_url: Optional[str] = None
-
-
-class PipelineStatus(BaseModel):
-    total_reference_videos: int
-    processed: int
-    pending: int
-    failed: int
+    improving: List[str]
+    regressing: List[str]
+    summary: Optional[str] = None

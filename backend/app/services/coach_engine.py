@@ -1,231 +1,101 @@
 """
-CoachEngine
-===========
-Conversational AI public speaking coach powered by Claude.
-
-The coach:
-  - Knows your full analysis results (scores, feedback, metrics)
-  - Answers questions about your speech
-  - Suggests targeted exercises
-  - Gives encouragement and motivation
-  - Recommends what to focus on next
-
-Usage:
-  engine = CoachEngine()
-  response = await engine.chat("Why did I score low on clarity?", analysis)
-  response = await engine.chat("Give me an exercise to reduce filler words", analysis)
+CoachEngine — long-term AI communication mentor
+================================================
+History-aware chat. Has access to the current analysis plus a summary of
+previous sessions/trends, and behaves like a mentor, not a generic bot.
 """
 
-import json
 import re
 from typing import Any
-
-import anthropic
 
 from app.core.config import settings
 from app.schemas.schemas import CoachResponse
 
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 
-# System prompt that defines the coach's personality and knowledge
-COACH_SYSTEM_PROMPT = """You are SpeakWise Coach — a warm, encouraging, expert public speaking coach.
-
-Your personality:
-- Supportive and motivating, never harsh or discouraging
-- Specific and practical — give concrete exercises, not vague advice
-- Data-driven — reference actual numbers from the analysis when relevant
-- Conversational — talk like a real coach, not a textbook
-- Concise — keep responses focused and actionable (2-4 paragraphs max)
-
-Your expertise covers:
-- Speaking pace, rhythm, and pauses
-- Filler word reduction techniques
-- Vocal variety (pitch, volume, tone)
-- Body language and eye contact
-- Speech structure (opening, narrative arc, closing)
-- Storytelling and audience engagement
-- Confidence and stage presence
-
-When suggesting exercises:
-- Make them specific and time-bound ("Practice this for 5 minutes today")
-- Make them immediately actionable (no equipment needed)
-- Explain WHY the exercise helps
-
-Always end with encouragement or a forward-looking statement."""
+SYSTEM_PROMPT = """You are SpeakWise Coach — a warm, expert, long-term communication mentor (not a generic chatbot).
+You know the speaker's full analysis: scores, delivery, body language, emotions, framework performance, and progress trends.
+Be supportive and specific. Reference their actual data. Give concrete exercises. Keep replies to 2-4 short paragraphs.
+You can: explain why they appeared nervous/uncertain, give confidence/eye-contact drills, rewrite answers using STAR/PREP, simulate a manager interview, and track progress over time.
+Always end with encouragement or a clear next step."""
 
 
 class CoachEngine:
 
     def __init__(self):
-        self._client = None
-        self._conversation_history = []  # maintains context within a session
+        self._genai = None
+        self._history = []
 
-    def _load_anthropic(self):
-        if self._client is None:
-            self._client = anthropic.Anthropic(
-                api_key=settings.ANTHROPIC_API_KEY
-            )
+    def _load(self):
+        if self._genai is None:
+            import google.generativeai as genai
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+            self._genai = genai
 
-    # ── Public API ──────────────────────────────────────────────────────────
+    def _model(self):
+        self._load()
+        for name in GEMINI_MODELS:
+            try:
+                return self._genai.GenerativeModel(name, system_instruction=SYSTEM_PROMPT)
+            except Exception as e:
+                print(f"[CoachEngine] {name} init failed: {e}")
+        raise RuntimeError("All Gemini models failed")
 
-    async def chat(
-        self,
-        message: str,
-        analysis: Any = None,  # Analysis DB model or None
-    ) -> CoachResponse:
-        """
-        Main entry point — send a message to the coach.
-
-        message:  user's question or request
-        analysis: optional Analysis DB object for context
-        """
-        self._load_anthropic()
-
-        # Build context from analysis if available
-        context = self._build_analysis_context(analysis)
-
-        # Build the full message with context injected
-        user_message = self._build_user_message(message, context)
-
-        # Add to conversation history
-        self._conversation_history.append({
-            "role": "user",
-            "content": user_message,
-        })
-
-        # Keep history manageable (last 10 exchanges)
-        if len(self._conversation_history) > 20:
-            self._conversation_history = self._conversation_history[-20:]
-
+    async def chat(self, message: str, analysis: Any = None, history_summary: str = "") -> CoachResponse:
         try:
-            response = self._client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1000,
-                system=COACH_SYSTEM_PROMPT,
-                messages=self._conversation_history,
-            )
+            model = self._model()
+            ctx = self._context(analysis, history_summary)
+            user_msg = f"{ctx}\n\nUser: {message}" if (ctx and not self._history) else message
+            self._history.append({"role": "user", "parts": [user_msg]})
+            if len(self._history) > 20:
+                self._history = self._history[-20:]
 
-            reply_text = response.content[0].text.strip()
-
-            # Add assistant reply to history for multi-turn context
-            self._conversation_history.append({
-                "role": "assistant",
-                "content": reply_text,
-            })
-
-            # Extract any exercise suggestions from the reply
-            suggestions = self._extract_suggestions(reply_text)
-
-            return CoachResponse(
-                reply=reply_text,
-                suggestions=suggestions,
-                referenced_clips=None,
-            )
-
+            chat = model.start_chat(history=self._history[:-1])
+            reply = chat.send_message(user_msg).text.strip()
+            self._history.append({"role": "model", "parts": [reply]})
+            return CoachResponse(reply=reply, suggestions=self._suggestions(reply), referenced_clips=None)
         except Exception as e:
-            print(f"[CoachEngine] Claude API error: {e}")
+            print(f"[CoachEngine] error: {e}")
             return CoachResponse(
-                reply=(
-                    "I'm having trouble connecting right now. "
-                    "Please check your API key and try again."
-                ),
-                suggestions=None,
-                referenced_clips=None,
-            )
+                reply="I'm having trouble connecting right now — please check the Gemini API key and try again.",
+                suggestions=None, referenced_clips=None)
 
     def reset_conversation(self):
-        """Clear conversation history — start fresh session."""
-        self._conversation_history = []
+        self._history = []
 
-    # ── Context builder ──────────────────────────────────────────────────────
-
-    def _build_analysis_context(self, analysis: Any) -> str:
-        """
-        Convert Analysis DB model into a concise context string
-        for Claude to reference during coaching.
-        """
-        if analysis is None:
+    def _context(self, a, history_summary):
+        if a is None:
             return ""
+        L = ["[CURRENT ANALYSIS]"]
+        if a.overall_score is not None:
+            L.append(f"Overall {a.overall_score}/100 | Confidence {a.confidence_score} | "
+                     f"Delivery {a.delivery_score} | Body Language {a.body_language_score} | "
+                     f"Emotional Presence {a.emotional_presence_score}")
+        if a.words_per_minute is not None:
+            L.append(f"{a.words_per_minute} WPM, {a.filler_word_count} fillers "
+                     f"({a.filler_word_rate}/min), eye contact {a.eye_contact_score}%")
+        if a.behavioral_patterns:
+            L.append(f"Body-language patterns: {', '.join(a.behavioral_patterns)}")
+        if a.emotions:
+            L.append("Emotions: " + "; ".join(
+                f"{e.get('emotion')} ({e.get('level')})" for e in a.emotions[:6]))
+        if a.feedback_summary:
+            L.append(f"Assessment: {a.feedback_summary}")
+        if a.scenario:
+            L.append(f"Scenario: {a.scenario}, topic: {a.topic or 'n/a'}")
+        if history_summary:
+            L.append(f"[PROGRESS HISTORY]\n{history_summary}")
+        return "\n".join(L)
 
-        lines = ["[SPEAKER ANALYSIS CONTEXT]"]
-
-        # Scores
-        if analysis.overall_score is not None:
-            lines.append(f"Overall score: {analysis.overall_score}/100")
-        if analysis.pace_score is not None:
-            lines.append(f"Pace: {analysis.pace_score}/100")
-        if analysis.clarity_score is not None:
-            lines.append(f"Clarity: {analysis.clarity_score}/100")
-        if analysis.confidence_score is not None:
-            lines.append(f"Confidence: {analysis.confidence_score}/100")
-        if analysis.engagement_score is not None:
-            lines.append(f"Engagement: {analysis.engagement_score}/100")
-        if analysis.structure_score is not None:
-            lines.append(f"Structure: {analysis.structure_score}/100")
-        if analysis.body_language_score is not None:
-            lines.append(f"Body language: {analysis.body_language_score}/100")
-
-        # Key audio metrics
-        if analysis.words_per_minute is not None:
-            lines.append(f"Speaking pace: {analysis.words_per_minute} WPM")
-        if analysis.filler_word_count is not None:
-            lines.append(f"Filler words: {analysis.filler_word_count} total "
-                         f"({analysis.filler_word_rate}/min)")
-        if analysis.filler_words_detail:
-            lines.append(f"Filler breakdown: {json.dumps(analysis.filler_words_detail)}")
-
-        # AI feedback summary
-        if analysis.feedback_summary:
-            lines.append(f"Feedback summary: {analysis.feedback_summary}")
-
-        # Improvement points
-        if analysis.improvement_points:
-            lines.append("Improvement areas:")
-            for point in analysis.improvement_points[:3]:
-                lines.append(f"  - {point.get('area')}: {point.get('issue')}")
-
-        # Transcript snippet
-        if analysis.transcript:
-            snippet = analysis.transcript[:300]
-            lines.append(f"Transcript preview: {snippet}...")
-
-        return "\n".join(lines)
-
-    def _build_user_message(self, message: str, context: str) -> str:
-        """
-        Inject analysis context into the first message only.
-        Subsequent messages are sent as-is (context already in history).
-        """
-        if context and len(self._conversation_history) == 0:
-            return f"{context}\n\n[USER QUESTION]: {message}"
-        return message
-
-    # ── Suggestion extraction ────────────────────────────────────────────────
-
-    def _extract_suggestions(self, reply: str) -> list[str] | None:
-        """
-        Extract quick-action suggestions from the coach reply.
-        These are shown as tappable buttons in the UI.
-        """
-        # Look for numbered lists or bullet points in the reply
-        suggestions = []
-
-        # Pattern: lines starting with number or bullet
-        lines = reply.split("\n")
-        for line in lines:
+    def _suggestions(self, reply):
+        out = []
+        for line in reply.split("\n"):
             line = line.strip()
             if re.match(r"^[\d]+[.)]\s+", line):
-                # Remove the number prefix
-                clean = re.sub(r"^[\d]+[.)]\s+", "", line)
-                if 10 < len(clean) < 100:
-                    suggestions.append(clean)
-
-        # If no list found, suggest common follow-up questions
-        if not suggestions:
-            suggestions = [
-                "Give me a practice exercise",
-                "What should I focus on first?",
-                "How do I reduce filler words?",
-                "Explain my pace score",
-            ]
-
-        return suggestions[:4]  # max 4 suggestions
+                c = re.sub(r"^[\d]+[.)]\s+", "", line)
+                if 10 < len(c) < 100:
+                    out.append(c)
+        if not out:
+            out = ["Why did I appear nervous?", "Give me a confidence exercise",
+                   "Rewrite my answer using STAR", "Simulate a manager interview"]
+        return out[:4]

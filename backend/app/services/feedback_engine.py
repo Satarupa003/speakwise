@@ -1,320 +1,203 @@
 """
-FeedbackEngine
-==============
-Generates personalized, actionable feedback for a speaker
-by combining their analysis scores with reference clips from
-great speakers in the knowledge base.
+FeedbackEngine — local Ollama mentor (text-only pipeline)
+==========================================================
+Runs 3 SMALL focused calls instead of one giant prompt — small local
+models (llama3.2 3B) handle short prompts far more reliably.
 
-Flow:
-  1. Identify weak areas from scores (below threshold)
-  2. Query ChromaDB for great speakers who excel in those areas
-  3. Send everything to Claude API to write specific, kind feedback
-  4. Return structured improvement points + reference clips
-
-Output dict shape:
-{
-    "summary":            str,
-    "improvement_points": list[dict],  # [{area, issue, tip, reference}]
-    "reference_clips":    list[dict],  # [{video_id, speaker, timestamp, reason}]
-    "strengths":          list[str],
-    "priority_focus":     str,         # the single most important thing to work on
-}
+Call 1: professional rewrite (the star feature)
+Call 2: framework breakdown + what worked + challenge questions
+Call 3: coaching points + micro-feedback + next topic
 """
 
 import json
 import re
 from typing import Any
 
-import anthropic
+OLLAMA_MODEL = "llama3.2"
 
-from app.core.config import settings
-from app.services.knowledge_base import KnowledgeBase
-
-
-# Areas scoring below this threshold get improvement points
-WEAK_THRESHOLD  = 70.0
-# Areas scoring above this get called out as strengths
-STRONG_THRESHOLD = 80.0
-
-# Human-readable labels for each dimension
-DIMENSION_LABELS = {
-    "pace":          "Speaking Pace",
-    "clarity":       "Clarity & Filler Words",
-    "confidence":    "Confidence",
-    "engagement":    "Audience Engagement",
-    "structure":     "Speech Structure",
-    "body_language": "Body Language",
+FRAMEWORKS = {
+    "interview":    {"name": "STAR",                     "parts": ["Situation", "Task", "Action", "Result"]},
+    "presentation": {"name": "Pyramid Principle",        "parts": ["Main Message", "Key Arguments", "Supporting Evidence"]},
+    "speech":       {"name": "Storytelling Arc",         "parts": ["Hook", "Context", "Conflict", "Resolution", "Call to Action"]},
+    "storytelling": {"name": "Storytelling Arc",         "parts": ["Hook", "Context", "Conflict", "Resolution", "Call to Action"]},
+    "discussion":   {"name": "PREP",                     "parts": ["Point", "Reason", "Example", "Point (restate)"]},
+    "debate":       {"name": "Claim-Evidence-Rebuttal",  "parts": ["Claim", "Evidence", "Rebuttal"]},
+    "pitch":        {"name": "Problem-Solution-Benefit", "parts": ["Problem", "Solution", "Benefit", "Call to Action"]},
+    "leadership":   {"name": "Vision-Story-Action",      "parts": ["Vision", "Why It Matters", "Story", "Action"]},
+    "corporate":    {"name": "Pyramid Principle",        "parts": ["Main Message", "Key Arguments", "Supporting Evidence"]},
+    "social":       {"name": "Storytelling Arc",         "parts": ["Hook", "Context", "Conflict", "Resolution", "Call to Action"]},
+    "humor":        {"name": "Setup-Punchline-Callback", "parts": ["Setup", "Punchline", "Callback"]},
+    "custom":       {"name": "Opening-Body-Closing",     "parts": ["Opening", "Body", "Closing"]},
 }
+
+YOUTUBE = {
+    "structure":  {"speaker": "Nancy Duarte", "title": "The Secret Structure of Great Talks",
+                   "url": "https://www.youtube.com/watch?v=1nYFpuc2Umk",
+                   "why": "The hero's-journey structure behind every great speech."},
+    "delivery":   {"speaker": "Julian Treasure", "title": "How to Speak so People Want to Listen",
+                   "url": "https://www.youtube.com/watch?v=eIho2S0ZahI",
+                   "why": "Masterclass in pace, pause and vocal register."},
+    "clarity":    {"speaker": "Ken Robinson", "title": "Do Schools Kill Creativity",
+                   "url": "https://www.youtube.com/watch?v=iG9CE55wbtY",
+                   "why": "Short sentences and concrete examples keep ideas clear."},
+    "engagement": {"speaker": "Hans Rosling", "title": "The Best Stats You've Ever Seen",
+                   "url": "https://www.youtube.com/watch?v=hVimVzgtD6w",
+                   "why": "Turning dry material into gripping storytelling."},
+    "interview":  {"speaker": "Linda Raynier", "title": "How to Answer Tell Me About Yourself",
+                   "url": "https://www.youtube.com/watch?v=kayOhGRcNt4",
+                   "why": "A structured, confident interview answer demonstrated."},
+    "discussion": {"speaker": "Conor Neill", "title": "The Secret to Great Speeches",
+                   "url": "https://www.youtube.com/watch?v=9-Doa51RErM",
+                   "why": "PREP demonstrated - Point, Reason, Example, Point."},
+}
+
+
+def _chat(prompt: str, temperature: float = 0.4) -> str:
+    """Call local Ollama. Works with both new (Pydantic) and old (dict) clients."""
+    import ollama
+    resp = ollama.chat(
+        model=OLLAMA_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        options={"temperature": temperature},
+    )
+    try:
+        return resp.message.content
+    except AttributeError:
+        return resp["message"]["content"]
+
+
+def _json(raw: str):
+    """Robust JSON extraction from a small model's output."""
+    raw = re.sub(r"```json\s*|```\s*", "", (raw or "").strip())
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    # fall back: grab the outermost {...}
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(raw[start:end + 1])
+        except Exception:
+            pass
+    return None
 
 
 class FeedbackEngine:
 
-    def __init__(self):
-        self._client = None
-        self._kb     = KnowledgeBase()
+    async def generate(self, audio: dict, visual: dict, nlp: dict, scores: dict,
+                       emotions: list, content_type: str = "speech",
+                       topic: str = "", slides_text: str = "",
+                       comparison: dict | None = None) -> dict[str, Any]:
 
-    def _load_anthropic(self):
-        if self._client is None:
-            self._client = anthropic.Anthropic(
-                api_key=settings.ANTHROPIC_API_KEY
-            )
+        scenario = content_type if content_type in FRAMEWORKS else "speech"
+        fw = FRAMEWORKS[scenario]
+        transcript = (audio.get("transcript") or "").strip()
+        print(f"[FeedbackEngine] {content_type} -> {fw['name']} (Ollama {OLLAMA_MODEL})")
 
-    # ── Public API ──────────────────────────────────────────────────────────
+        stats = (f"{audio.get('duration_seconds', 0):.0f}s, "
+                 f"{audio.get('words_per_minute', 0):.0f} WPM (ideal 120-160), "
+                 f"{audio.get('filler_word_count', 0)} filler words "
+                 f"({audio.get('filler_word_rate', 0):.1f}/min), "
+                 f"{audio.get('pause_count', 0)} pauses")
 
-    async def generate(
-        self,
-        audio:  dict[str, Any],
-        visual: dict[str, Any],
-        nlp:    dict[str, Any],
-        scores: dict[str, Any],
-    ) -> dict[str, Any]:
-        """
-        Main entry point.
-        Takes all analyzer outputs + scores.
-        Returns structured feedback with reference clips.
-        """
-        print("[FeedbackEngine] Generating personalized feedback...")
-        self._load_anthropic()
+        out: dict[str, Any] = {}
+        out.update(self._rewrite(transcript, fw, topic, scenario))
+        out.update(self._breakdown(transcript, fw, stats, scenario))
+        out.update(self._coaching(transcript, stats, scenario))
 
-        # 1. Find weak and strong areas
-        weak_areas   = self._find_weak_areas(scores)
-        strong_areas = self._find_strong_areas(scores)
+        clips = [YOUTUBE[k] for k in (scenario, "structure", "delivery") if k in YOUTUBE]
+        seen, uniq = set(), []
+        for c in clips:
+            if c["url"] not in seen:
+                uniq.append(c); seen.add(c["url"])
 
-        print(f"[FeedbackEngine] Weak areas: {weak_areas}")
-        print(f"[FeedbackEngine] Strong areas: {strong_areas}")
+        out.update({
+            "scenario": scenario, "content_type": content_type,
+            "framework": fw, "reference_clips": uniq[:3],
+            "feedback_summary": out.get("overall_assessment", ""),
+            "audience_perception": out.get("audience_perception", ""),
+            "framework_recommendation": {}, "emotional_presence": {},
+            "delivery_observations": [], "body_language_observations": [],
+        })
+        print(f"[FeedbackEngine] Done - rewrite {len(out.get('polished_version',''))} chars, "
+              f"{len(out.get('improvement_points', []))} coaching points")
+        return out
 
-        # 2. Find reference speakers for weak areas from knowledge base
-        reference_clips = await self._get_reference_clips(weak_areas, audio)
+    # ── Call 1 — the professional rewrite ────────────────────────────────
+    def _rewrite(self, transcript, fw, topic, scenario) -> dict:
+        prompt = f"""You are an expert communication coach.
 
-        # 3. Build context for Claude
-        context = self._build_context(audio, visual, nlp, scores)
+A speaker gave a {scenario} on: {topic or "an unspecified topic"}
 
-        # 4. Generate feedback with Claude
-        feedback = await self._claude_feedback(
-            context, weak_areas, strong_areas, reference_clips
-        )
+THEIR SPEECH:
+{transcript[:1800]}
 
-        # 5. Attach reference clips to improvement points
-        feedback["reference_clips"] = reference_clips
-
-        print(f"[FeedbackEngine] ✓ Generated {len(feedback['improvement_points'])} "
-              f"improvement points, {len(reference_clips)} reference clips")
-        return feedback
-
-    # ── Weak / Strong area detection ─────────────────────────────────────────
-
-    def _find_weak_areas(self, scores: dict) -> list[str]:
-        """Return dimension names scoring below WEAK_THRESHOLD."""
-        dimensions = ["pace", "clarity", "confidence",
-                      "engagement", "structure", "body_language"]
-        weak = [
-            dim for dim in dimensions
-            if scores.get(dim, 100) < WEAK_THRESHOLD
-        ]
-        # Sort by score ascending — worst areas first
-        weak.sort(key=lambda d: scores.get(d, 0))
-        return weak
-
-    def _find_strong_areas(self, scores: dict) -> list[str]:
-        """Return dimension names scoring above STRONG_THRESHOLD."""
-        dimensions = ["pace", "clarity", "confidence",
-                      "engagement", "structure", "body_language"]
-        return [
-            dim for dim in dimensions
-            if scores.get(dim, 0) >= STRONG_THRESHOLD
-        ]
-
-    # ── Reference clips ──────────────────────────────────────────────────────
-
-    async def _get_reference_clips(
-        self,
-        weak_areas: list[str],
-        audio: dict,
-    ) -> list[dict]:
-        """
-        Query knowledge base for reference speakers
-        for each weak area. Returns up to 3 clips total.
-        """
-        clips = []
-
-        for area in weak_areas[:3]:  # max 3 areas
-            speakers = await self._kb.find_by_skill(area, n_results=1)
-            for sp in speakers:
-                clips.append({
-                    "video_id":     sp["video_id"],
-                    "speaker_name": sp["speaker_name"],
-                    "title":        sp["title"],
-                    "file_path":    sp.get("file_path", ""),
-                    "timestamp":    sp.get("timestamp", 0.0),
-                    "duration":     30.0,
-                    "skill":        area,
-                    "reason":       sp.get("reason", ""),
-                })
-
-        return clips
-
-    # ── Context builder ──────────────────────────────────────────────────────
-
-    def _build_context(
-        self,
-        audio:  dict,
-        visual: dict,
-        nlp:    dict,
-        scores: dict,
-    ) -> str:
-        """Build a concise context string for Claude."""
-        breakdown = scores.get("breakdown", {})
-
-        return f"""
-SCORES:
-- Overall: {scores.get('overall')}/100
-- Pace: {scores.get('pace')}/100
-- Clarity: {scores.get('clarity')}/100
-- Confidence: {scores.get('confidence')}/100
-- Engagement: {scores.get('engagement')}/100
-- Structure: {scores.get('structure')}/100
-- Body Language: {scores.get('body_language')}/100
-
-AUDIO METRICS:
-- Speaking pace: {audio.get('words_per_minute')} WPM (ideal: 120-160)
-- Filler words: {audio.get('filler_word_count')} total, {audio.get('filler_word_rate')}/min
-- Filler breakdown: {json.dumps(audio.get('filler_words_detail', {}))}
-- Pauses: {audio.get('pause_count')} pauses, avg {audio.get('avg_pause_duration')}s
-- Pitch variation: {audio.get('pitch_variation')} Hz std dev
-- Duration: {audio.get('duration_seconds')}s
-
-VISUAL METRICS:
-- Eye contact: {visual.get('eye_contact_score')}/100
-- Posture: {visual.get('posture_score')}/100
-- Gesture frequency: {visual.get('gesture_frequency')} per minute
-
-NLP ANALYSIS:
-- Storytelling: {nlp.get('storytelling_score')}/100
-- Clarity: {nlp.get('clarity_score')}/100
-- Persuasion: {nlp.get('persuasion_score')}/100
-- Opening strength: {nlp.get('opening_strength')}/100
-- Closing strength: {nlp.get('closing_strength')}/100
-- NLP feedback: {nlp.get('nlp_feedback', '')}
-- Strongest moment: {nlp.get('strongest_moment', '')}
-- Weakest moment: {nlp.get('weakest_moment', '')}
-""".strip()
-
-    # ── Claude feedback generation ────────────────────────────────────────────
-
-    async def _claude_feedback(
-        self,
-        context:        str,
-        weak_areas:     list[str],
-        strong_areas:   list[str],
-        reference_clips: list[dict],
-    ) -> dict:
-        """
-        Use Claude to generate warm, specific, actionable feedback.
-        """
-        # Describe available reference clips
-        clips_desc = ""
-        if reference_clips:
-            clips_desc = "\nAVAILABLE REFERENCE SPEAKERS:\n"
-            for clip in reference_clips:
-                clips_desc += (
-                    f"- {clip['speaker_name']} ({clip['title']}) "
-                    f"for skill: {clip['skill']}\n"
-                )
-
-        weak_labels  = [DIMENSION_LABELS.get(a, a) for a in weak_areas]
-        strong_labels = [DIMENSION_LABELS.get(a, a) for a in strong_areas]
-
-        prompt = f"""You are a warm, encouraging public speaking coach analyzing a speaker's performance.
-
-ANALYSIS DATA:
-{context}
-{clips_desc}
-
-WEAK AREAS (need improvement): {weak_labels}
-STRONG AREAS (doing well): {strong_labels}
-
-Generate coaching feedback. Respond with ONLY a JSON object (no markdown):
-
-{{
-    "summary": "<2-3 sentence overall assessment, warm and encouraging tone>",
-    "priority_focus": "<single most important thing to work on, one sentence>",
-    "strengths": [<list of 2-3 specific things they did well>],
-    "improvement_points": [
-        {{
-            "area": "<dimension name from: pace/clarity/confidence/engagement/structure/body_language>",
-            "issue": "<specific problem observed, one sentence, reference actual numbers>",
-            "tip": "<specific actionable fix, 1-2 sentences, practical and concrete>",
-            "exercise": "<a quick practice exercise they can do today>"
-        }}
-    ]
-}}
-
-Rules:
-- improvement_points should cover the {len(weak_areas)} weak areas: {weak_labels}
-- Reference specific numbers from the data (e.g. "your 185 WPM is above the ideal 120-160")
-- Tips must be actionable (not vague like "be more confident")
-- Tone: like a supportive coach, not a critic
-- Each tip should reference what great speakers do differently"""
-
+Rewrite this speech the way a highly effective professional communicator would deliver it.
+Keep the same topic, same argument, same intent. Improve structure, wording, flow and persuasion.
+Apply the {fw['name']} framework ({" -> ".join(fw['parts'])}).
+Write at least 150 words. Write ONLY the rewritten speech - no preamble, no notes, no quotes."""
         try:
-            message = self._client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1500,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            raw = message.content[0].text.strip()
-            raw = re.sub(r"```json\s*", "", raw)
-            raw = re.sub(r"```\s*",     "", raw)
-
-            data = json.loads(raw)
-
-            # Attach reference clip to matching improvement point
-            improvement_points = data.get("improvement_points", [])
-            for point in improvement_points:
-                area = point.get("area", "")
-                matching_clip = next(
-                    (c for c in reference_clips if c["skill"] == area), None
-                )
-                if matching_clip:
-                    point["reference_video_id"] = matching_clip["video_id"]
-                    point["reference_speaker"]  = matching_clip["speaker_name"]
-                    point["reference_timestamp"] = matching_clip["timestamp"]
-
-            return {
-                "summary":            data.get("summary", ""),
-                "priority_focus":     data.get("priority_focus", ""),
-                "strengths":          data.get("strengths", []),
-                "improvement_points": improvement_points,
-            }
-
+            text = _chat(prompt, 0.5).strip()
+            text = re.sub(r'^(here\'?s|here is)[^\n:]*:\s*', '', text, flags=re.I).strip('"\n ')
+            if len(text) < 80:
+                raise ValueError("rewrite too short")
+            return {"polished_version": text}
         except Exception as e:
-            print(f"[FeedbackEngine] Claude API error: {e}")
-            return self._fallback_feedback(weak_areas, strong_areas)
+            print(f"[FeedbackEngine] rewrite failed: {e}")
+            return {"polished_version": "Rewrite unavailable - the local model did not return usable output. Try re-running the analysis."}
 
-    # ── Fallback ─────────────────────────────────────────────────────────────
+    # ── Call 2 — framework breakdown + strengths + challenges ────────────
+    def _breakdown(self, transcript, fw, stats, scenario) -> dict:
+        parts = ", ".join(fw["parts"])
+        prompt = f"""You are a communication coach reviewing a {scenario}.
 
-    def _fallback_feedback(
-        self,
-        weak_areas:   list[str],
-        strong_areas: list[str],
-    ) -> dict:
-        """Return basic feedback when Claude API fails."""
+SPEECH: {transcript[:1200]}
+SPEAKING DATA: {stats}
+
+Framework: {fw['name']} with parts: {parts}
+
+Reply with ONLY this JSON, no other text:
+{{"overall_assessment":"2 warm sentences about how they did",
+"overall_score_label":"e.g. Solid attempt - 7/10",
+"framework_breakdown":[{{"part":"<one of: {parts}>","status":"present or weak or missing","observation":"what they did for this part","verdict":"one of: OK Strong | Needs work | Missing"}}],
+"what_worked_well":["specific strength 1","strength 2","strength 3"],
+"challenge_questions":["tough question an interviewer would ask","another"],
+"audience_perception":"2 sentences on how listeners likely perceived them"}}
+
+Include one framework_breakdown entry for EACH part: {parts}"""
+        d = _json(_chat(prompt, 0.3)) or {}
+        if not d.get("framework_breakdown"):
+            d["framework_breakdown"] = [{"part": p, "status": "weak",
+                                         "observation": "Not clearly identified in this attempt.",
+                                         "verdict": "Needs work"} for p in fw["parts"]]
         return {
-            "summary": (
-                "Analysis complete. "
-                f"Your strongest areas are {', '.join(strong_areas) or 'being assessed'}. "
-                f"Focus on improving {', '.join(weak_areas) or 'consistency'}."
-            ),
-            "priority_focus": weak_areas[0] if weak_areas else "overall consistency",
-            "strengths": [f"Good {a}" for a in strong_areas[:3]],
-            "improvement_points": [
-                {
-                    "area":    area,
-                    "issue":   f"Your {DIMENSION_LABELS.get(area, area)} needs attention.",
-                    "tip":     f"Practice improving your {DIMENSION_LABELS.get(area, area)}.",
-                    "exercise": "Record yourself and review.",
-                }
-                for area in weak_areas[:3]
-            ],
+            "overall_assessment": d.get("overall_assessment", "Good practice attempt - keep going."),
+            "overall_score_label": d.get("overall_score_label", ""),
+            "framework_breakdown": d.get("framework_breakdown", []),
+            "what_worked_well": d.get("what_worked_well", []),
+            "challenge_questions": d.get("challenge_questions", []),
+            "audience_perception": d.get("audience_perception", ""),
+        }
+
+    # ── Call 3 — coaching points + micro-feedback + next topic ───────────
+    def _coaching(self, transcript, stats, scenario) -> dict:
+        prompt = f"""You are a communication coach.
+
+SPEECH: {transcript[:1200]}
+SPEAKING DATA: {stats}
+
+Reply with ONLY this JSON, no other text:
+{{"improvement_points":[{{"area":"clarity or structure or delivery or confidence or engagement","what_happened":"specific observation using the data","why_it_matters":"impact on the listener","how_to_fix":"concrete technique","practice_exercise":"a 5-10 minute exercise"}}],
+"micro_feedback":[{{"observation":"a repeated word, vague claim or weak transition you noticed","before":"their actual phrasing","after":"improved phrasing"}}],
+"next_practice_topic":"a harder related topic and why it helps",
+"motivational_close":"one encouraging sentence"}}
+
+Give 2-3 improvement_points and 2 micro_feedback items."""
+        d = _json(_chat(prompt, 0.3)) or {}
+        return {
+            "improvement_points": d.get("improvement_points", []),
+            "micro_feedback": d.get("micro_feedback", []),
+            "next_practice_topic": d.get("next_practice_topic", ""),
+            "motivational_close": d.get("motivational_close", "Every practice session makes you sharper."),
         }

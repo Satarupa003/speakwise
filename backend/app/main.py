@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api.v1 import videos, analyses, coach, progress, pipeline
+from app.api.v1 import videos, analyses, coach, progress
 
 
 @asynccontextmanager
@@ -37,7 +37,7 @@ app.include_router(videos.router,   prefix="/api/v1/videos",   tags=["Videos"])
 app.include_router(analyses.router, prefix="/api/v1/analyses", tags=["Analyses"])
 app.include_router(coach.router,    prefix="/api/v1/coach",    tags=["Coach"])
 app.include_router(progress.router, prefix="/api/v1/progress", tags=["Progress"])
-app.include_router(pipeline.router, prefix="/api/v1/pipeline", tags=["Pipeline"])
+#app.include_router(pipeline.router, prefix="/api/v1/pipeline", tags=["Pipeline"])
 
 
 @app.get("/health")

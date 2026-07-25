@@ -1,7 +1,8 @@
-# Environment — contains API keys, never commit
+# Environment
 .env
 
-# Virtual environment — too large, not needed
+# Virtual environment
+backend/venv/
 venv/
 
 # Database
@@ -13,20 +14,16 @@ __pycache__/
 *.pyo
 
 # ChromaDB data
-data/knowledge_base/
+backend/data/knowledge_base/
 
 # Uploaded videos
-data/user_uploads/
-data/speaker_videos/
-data/analysis_output/
+backend/data/user_uploads/
+backend/data/speaker_videos/
+backend/data/analysis_output/
+
+# Node modules
+node_modules/
+frontend/node_modules/
 
 # Test output files
 *.json
-
-# Large media files
-backend/data/
-data/
-*.mp4
-*.wav
-*.avi
-*.mov

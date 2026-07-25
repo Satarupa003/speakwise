@@ -1,63 +1,53 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
 from app.core.database import get_db
 from app.models.analysis import Analysis
 from app.models.video import Video
-from app.schemas.schemas import ProgressDashboard, ProgressEntry, ScoreBreakdown
+from app.schemas.schemas import ProgressDashboard, ProgressEntry
 
 router = APIRouter()
 
 
-@router.get("/dashboard", response_model=ProgressDashboard)
+@router.get("/", response_model=ProgressDashboard)
 async def get_progress(db: AsyncSession = Depends(get_db)):
-    """Get user progress dashboard."""
+    """Communication Memory Profile — trends across all sessions."""
     result = await db.execute(
-        select(Analysis, Video)
-        .join(Video, Analysis.video_id == Video.id)
+        select(Analysis).join(Video, Analysis.video_id == Video.id)
         .where(Video.is_reference == False)  # noqa: E712
-        .order_by(Analysis.created_at.desc())
-        .limit(50)
-    )
-    rows = result.all()
+        .order_by(Analysis.created_at.asc()))
+    rows = result.scalars().all()
 
-    if not rows:
-        return ProgressDashboard(
-            total_sessions=0,
-            avg_score=0.0,
-            best_score=0.0,
-            recent_sessions=[],
-            score_trend=[],
-        )
+    entries = [ProgressEntry(
+        video_id=a.video_id,
+        date=str(a.created_at)[:16] if a.created_at else None,
+        scenario=a.scenario, topic=a.topic,
+        overall=a.overall_score, confidence=a.confidence_score,
+        body_language=a.body_language_score, emotional_presence=a.emotional_presence_score,
+        filler_word_rate=a.filler_word_rate, eye_contact=a.eye_contact_score,
+    ) for a in rows]
 
-    scores = [r.Analysis.overall_score for r in rows if r.Analysis.overall_score]
-    recent = [
-        ProgressEntry(
-            video_id=r.Analysis.video_id,
-            date=r.Analysis.created_at,
-            overall_score=r.Analysis.overall_score or 0,
-            scores=ScoreBreakdown(
-                overall=r.Analysis.overall_score,
-                pace=r.Analysis.pace_score,
-                clarity=r.Analysis.clarity_score,
-                confidence=r.Analysis.confidence_score,
-                engagement=r.Analysis.engagement_score,
-                structure=r.Analysis.structure_score,
-                body_language=r.Analysis.body_language_score,
-            ),
-        )
-        for r in rows[:10]
-    ]
+    improving, regressing = [], []
+    if len(rows) >= 2:
+        first, last = rows[0], rows[-1]
+        checks = [("Overall", first.overall_score, last.overall_score, False),
+                  ("Confidence", first.confidence_score, last.confidence_score, False),
+                  ("Body language", first.body_language_score, last.body_language_score, False),
+                  ("Emotional presence", first.emotional_presence_score, last.emotional_presence_score, False),
+                  ("Filler rate", first.filler_word_rate, last.filler_word_rate, True),
+                  ("Eye contact", first.eye_contact_score, last.eye_contact_score, False)]
+        for name, old, new, lower_better in checks:
+            if old is None or new is None:
+                continue
+            better = (new < old) if lower_better else (new > old)
+            worse  = (new > old) if lower_better else (new < old)
+            if better and abs(new - old) >= 2:  improving.append(name)
+            elif worse and abs(new - old) >= 2: regressing.append(name)
 
-    trend = [
-        {"date": str(r.Analysis.created_at.date()), "score": r.Analysis.overall_score or 0}
-        for r in reversed(rows)
-    ]
+    summary = (f"{len(rows)} session(s) recorded. "
+               + (f"Improving: {', '.join(improving)}. " if improving else "")
+               + (f"Needs attention: {', '.join(regressing)}." if regressing else ""))
 
-    return ProgressDashboard(
-        total_sessions=len(rows),
-        avg_score=round(sum(scores) / len(scores), 1) if scores else 0,
-        best_score=round(max(scores), 1) if scores else 0,
-        recent_sessions=recent,
-        score_trend=trend,
-    )
+    return ProgressDashboard(entries=entries, total_sessions=len(rows),
+                             improving=improving, regressing=regressing, summary=summary.strip())

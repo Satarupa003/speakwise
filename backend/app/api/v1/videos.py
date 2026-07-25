@@ -18,6 +18,8 @@ router = APIRouter()
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    content_type: str = "speech",
+    topic: str = "",
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a user speech video and trigger analysis."""
@@ -51,12 +53,14 @@ async def upload_video(
         file_size_mb=round(size_mb, 2),
         mime_type=file.content_type,
         status=VideoStatus.UPLOADED,
+        title=topic or None,
+        speaker_name=content_type,
     )
     db.add(video)
     await db.flush()
 
     # Queue analysis
-    background_tasks.add_task(run_analysis_pipeline, video_id)
+    background_tasks.add_task(run_analysis_pipeline, video_id, content_type, topic)
 
     return video
 
