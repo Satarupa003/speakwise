@@ -28,7 +28,7 @@ class VideoDetail(BaseModel):
     filename: str
     original_filename: str
     file_size_mb: float
-    duration_seconds: float
+    duration_seconds: Optional[float] = None
     status: VideoStatus
     title: Optional[str] = None
     speaker_name: Optional[str] = None
@@ -128,18 +128,6 @@ class ImprovementPoint(BaseModel):
     practice_exercise: Optional[str] = None
     issue: Optional[str] = None
     tip: Optional[str] = None
-    reference_url: Optional[str] = None
-    reference_speaker: Optional[str] = None
-    reference_title: Optional[str] = None
-    reference_why: Optional[str] = None
-
-
-class ReferenceClip(BaseModel):
-    speaker: Optional[str] = None
-    title: Optional[str] = None
-    url: Optional[str] = None
-    why: Optional[str] = None
-    skill: Optional[str] = None
 
 
 class ComparisonChange(BaseModel):
@@ -181,7 +169,6 @@ class AnalysisResult(BaseModel):
     micro_feedback: Optional[List[MicroFeedback]] = None
     challenge_questions: Optional[List[str]] = None
     improvement_points: Optional[List[ImprovementPoint]] = None
-    reference_clips: Optional[List[ReferenceClip]] = None
 
     comparison: Optional[Dict[str, Any]] = None
     created_at: datetime
@@ -205,7 +192,6 @@ class CoachMessage(BaseModel):
 class CoachResponse(BaseModel):
     reply: str
     suggestions: Optional[List[str]] = None
-    referenced_clips: Optional[List[ReferenceClip]] = None
 
 
 # ── Progress ──────────────────────────────────────────────────────────────────
@@ -214,6 +200,7 @@ class ProgressEntry(BaseModel):
     date: Optional[str] = None
     scenario: Optional[str] = None
     topic: Optional[str] = None
+    status: Optional[str] = None
     overall: Optional[float] = None
     confidence: Optional[float] = None
     body_language: Optional[float] = None

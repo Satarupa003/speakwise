@@ -14,19 +14,21 @@ router = APIRouter()
 async def get_progress(db: AsyncSession = Depends(get_db)):
     """Communication Memory Profile — trends across all sessions."""
     result = await db.execute(
-        select(Analysis).join(Video, Analysis.video_id == Video.id)
+        select(Analysis, Video.status).join(Video, Analysis.video_id == Video.id)
         .where(Video.is_reference == False)  # noqa: E712
         .order_by(Analysis.created_at.asc()))
-    rows = result.scalars().all()
+    pairs = result.all()
+    rows = [a for a, _ in pairs]
 
     entries = [ProgressEntry(
         video_id=a.video_id,
         date=str(a.created_at)[:16] if a.created_at else None,
         scenario=a.scenario, topic=a.topic,
+        status=(status.value if hasattr(status, "value") else str(status)),
         overall=a.overall_score, confidence=a.confidence_score,
         body_language=a.body_language_score, emotional_presence=a.emotional_presence_score,
         filler_word_rate=a.filler_word_rate, eye_contact=a.eye_contact_score,
-    ) for a in rows]
+    ) for a, status in pairs]
 
     improving, regressing = [], []
     if len(rows) >= 2:

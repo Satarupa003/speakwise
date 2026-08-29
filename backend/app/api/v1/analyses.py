@@ -8,7 +8,7 @@ from app.models.video import Video, VideoStatus
 from app.schemas.schemas import (
     AnalysisResult, AnalysisStartResponse, ScoreBreakdown, AudioMetrics,
     VisualMetrics, EmotionSignal, FrameworkPart, FrameworkRecommendation,
-    Observation, MicroFeedback, ImprovementPoint, ReferenceClip,
+    Observation, MicroFeedback, ImprovementPoint,
 )
 from app.tasks.analysis_task import run_analysis_pipeline
 
@@ -86,7 +86,6 @@ async def get_analysis(video_id: str, db: AsyncSession = Depends(get_db)):
         micro_feedback=_clean_list(a.micro_feedback, MicroFeedback),
         challenge_questions=a.challenge_questions or [],
         improvement_points=_clean_list(a.improvement_points, ImprovementPoint),
-        reference_clips=_clean_list(a.reference_clips, ReferenceClip),
         comparison=a.comparison or {},
         created_at=a.created_at,
     )

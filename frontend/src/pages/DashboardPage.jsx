@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getAnalysis } from '../api/videos'
+import { getAnalysis, getVideo } from '../api/videos'
 
 /* Small circular score */
 const MiniRing = ({ score, label }) => {
@@ -32,13 +32,21 @@ export default function DashboardPage() {
   const { videoId }             = useParams()
   const navigate                = useNavigate()
   const [a, setA]               = useState(null)
+  const [video, setVideo]       = useState(null)
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState('')
 
   useEffect(() => {
     (async () => {
-      try { const res = await getAnalysis(videoId); setA(res.data) }
-      catch { setError('Could not load results.') }
+      try {
+        const [analysisRes, videoRes] = await Promise.all([
+          getAnalysis(videoId).catch(() => null),
+          getVideo(videoId).catch(() => null),
+        ])
+        if (analysisRes) setA(analysisRes.data)
+        if (videoRes) setVideo(videoRes.data)
+        if (!analysisRes && !videoRes) setError('Could not load results.')
+      } catch { setError('Could not load results.') }
       finally { setLoading(false) }
     })()
   }, [videoId])
@@ -60,6 +68,23 @@ export default function DashboardPage() {
     </div>
   )
 
+  // Pipeline errored out partway through — the analysis row may carry scores from
+  // before the failure (they get committed alongside the FAILED status write), but
+  // feedback text never made it. Say so plainly instead of rendering a scores-only page.
+  if (video?.status === 'failed') return (
+    <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
+      <div className="text-center space-y-4 max-w-sm px-4">
+        <div className="text-5xl">❌</div>
+        <h2 className="text-xl font-semibold">Analysis generation failed</h2>
+        <p className="text-red-400 text-sm">{video.error_message || 'The AI feedback step did not complete for this session.'}</p>
+        <p className="text-gray-500 text-xs">Any scores shown below are incomplete — this session has no written feedback.</p>
+        <button onClick={() => navigate('/')} className="px-4 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm transition-colors">
+          Try a new upload
+        </button>
+      </div>
+    </div>
+  )
+
   const s      = a?.scores || {}
   const fw     = a?.framework || {}
   const fwParts = a?.framework_breakdown || []
@@ -67,7 +92,6 @@ export default function DashboardPage() {
   const challenges = a?.challenge_questions || []
   const speaking = a?.speaking_specific_feedback || []
   const pts    = a?.improvement_points || []
-  const clips  = a?.reference_clips || []
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -198,16 +222,6 @@ export default function DashboardPage() {
                     <p className="text-xs text-amber-400 uppercase tracking-wide mb-1">🎯 Practice exercise</p>
                     <p className="text-sm text-gray-300">{p.practice_exercise}</p></div>
                 )}
-                {p.reference_url && (
-                  <div className="bg-red-950/30 border border-red-500/20 rounded-xl p-3">
-                    <p className="text-xs text-red-400 uppercase tracking-wide mb-1">📹 Watch this</p>
-                    <a href={p.reference_url} target="_blank" rel="noopener noreferrer"
-                      className="text-sm font-medium text-white hover:text-violet-300 block">
-                      {p.reference_speaker} — {p.reference_title}
-                    </a>
-                    {p.reference_why && <p className="text-xs text-gray-400 mt-1">{p.reference_why}</p>}
-                  </div>
-                )}
               </div>
             ))}
           </div>
@@ -224,25 +238,6 @@ export default function DashboardPage() {
                   {n.fix && <p className="text-gray-500">Fix: {n.fix}</p>}
                   {n.example && <p className="text-violet-400 text-xs">{n.example}</p>}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* YouTube references */}
-        {clips.length > 0 && (
-          <div>
-            <h2 className="text-lg font-semibold mb-3 text-gray-200">📚 Learn from the best</h2>
-            <div className="space-y-2">
-              {clips.map((c, i) => (
-                <a key={i} href={c.url} target="_blank" rel="noopener noreferrer"
-                  className="flex items-start gap-3 p-3 bg-gray-900 border border-gray-800 rounded-xl hover:border-violet-500/40 transition-colors">
-                  <div className="w-9 h-9 rounded-lg bg-red-500/20 flex items-center justify-center flex-shrink-0 text-sm">▶</div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{c.speaker} — {c.title}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{c.why}</p>
-                  </div>
-                </a>
               ))}
             </div>
           </div>

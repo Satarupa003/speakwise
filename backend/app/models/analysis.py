@@ -75,7 +75,6 @@ class Analysis(Base):
     delivery_analysis: Mapped[dict] = mapped_column(JSON, nullable=True)       # deep voice coaching
     body_language_analysis: Mapped[dict] = mapped_column(JSON, nullable=True)  # deep body coaching
     emotional_presence: Mapped[dict] = mapped_column(JSON, nullable=True)
-    reference_clips: Mapped[list] = mapped_column(JSON, nullable=True)
 
     # ── Memory / comparison with previous attempts ───────────────
     comparison: Mapped[dict] = mapped_column(JSON, nullable=True)

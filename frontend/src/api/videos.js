@@ -13,4 +13,7 @@ export const uploadVideo = (file, onProgress) => {
 }
 
 export const getAnalysis = (videoId) => api.get(`/analyses/${videoId}`)
-export const getVideo = (videoId) => api.get(`/videos/${videoId}`)
+export const getVideo    = (videoId) => api.get(`/videos/${videoId}`)
+export const coachChat   = (videoId, message) =>
+  api.post('/coach/chat', { video_id: videoId, message })
+export const getProgress = () => api.get('/progress/')

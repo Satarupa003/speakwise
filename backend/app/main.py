@@ -11,7 +11,7 @@ from app.api.v1 import videos, analyses, coach, progress
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
-    print("✓ Database initialized")
+    print("[OK] Database initialized")
     yield
     # Shutdown
     print("Server shutting down")
