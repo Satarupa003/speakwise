@@ -9,6 +9,7 @@ Call 2: framework breakdown + what worked + challenge questions
 Call 3: coaching points + micro-feedback + next topic
 """
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -29,28 +30,6 @@ FRAMEWORKS = {
     "humor":        {"name": "Setup-Punchline-Callback", "parts": ["Setup", "Punchline", "Callback"]},
     "custom":       {"name": "Opening-Body-Closing",     "parts": ["Opening", "Body", "Closing"]},
 }
-
-YOUTUBE = {
-    "structure":  {"speaker": "Nancy Duarte", "title": "The Secret Structure of Great Talks",
-                   "url": "https://www.youtube.com/watch?v=1nYFpuc2Umk",
-                   "why": "The hero's-journey structure behind every great speech."},
-    "delivery":   {"speaker": "Julian Treasure", "title": "How to Speak so People Want to Listen",
-                   "url": "https://www.youtube.com/watch?v=eIho2S0ZahI",
-                   "why": "Masterclass in pace, pause and vocal register."},
-    "clarity":    {"speaker": "Ken Robinson", "title": "Do Schools Kill Creativity",
-                   "url": "https://www.youtube.com/watch?v=iG9CE55wbtY",
-                   "why": "Short sentences and concrete examples keep ideas clear."},
-    "engagement": {"speaker": "Hans Rosling", "title": "The Best Stats You've Ever Seen",
-                   "url": "https://www.youtube.com/watch?v=hVimVzgtD6w",
-                   "why": "Turning dry material into gripping storytelling."},
-    "interview":  {"speaker": "Linda Raynier", "title": "How to Answer Tell Me About Yourself",
-                   "url": "https://www.youtube.com/watch?v=kayOhGRcNt4",
-                   "why": "A structured, confident interview answer demonstrated."},
-    "discussion": {"speaker": "Conor Neill", "title": "The Secret to Great Speeches",
-                   "url": "https://www.youtube.com/watch?v=9-Doa51RErM",
-                   "why": "PREP demonstrated - Point, Reason, Example, Point."},
-}
-
 
 def _chat(prompt: str, temperature: float = 0.4) -> str:
     """Call local Ollama. Works with both new (Pydantic) and old (dict) clients."""
@@ -101,20 +80,13 @@ class FeedbackEngine:
                  f"({audio.get('filler_word_rate', 0):.1f}/min), "
                  f"{audio.get('pause_count', 0)} pauses")
 
-        out: dict[str, Any] = {}
-        out.update(self._rewrite(transcript, fw, topic, scenario))
-        out.update(self._breakdown(transcript, fw, stats, scenario))
-        out.update(self._coaching(transcript, stats, scenario))
-
-        clips = [YOUTUBE[k] for k in (scenario, "structure", "delivery") if k in YOUTUBE]
-        seen, uniq = set(), []
-        for c in clips:
-            if c["url"] not in seen:
-                uniq.append(c); seen.add(c["url"])
+        # 3 sequential ollama.chat calls are blocking network I/O — run them off
+        # the event loop so other API requests keep responding while Ollama churns.
+        out = await asyncio.to_thread(self._generate_sync, transcript, fw, topic, scenario, stats)
 
         out.update({
             "scenario": scenario, "content_type": content_type,
-            "framework": fw, "reference_clips": uniq[:3],
+            "framework": fw,
             "feedback_summary": out.get("overall_assessment", ""),
             "audience_perception": out.get("audience_perception", ""),
             "framework_recommendation": {}, "emotional_presence": {},
@@ -122,6 +94,13 @@ class FeedbackEngine:
         })
         print(f"[FeedbackEngine] Done - rewrite {len(out.get('polished_version',''))} chars, "
               f"{len(out.get('improvement_points', []))} coaching points")
+        return out
+
+    def _generate_sync(self, transcript, fw, topic, scenario, stats) -> dict:
+        out: dict[str, Any] = {}
+        out.update(self._rewrite(transcript, fw, topic, scenario))
+        out.update(self._breakdown(transcript, fw, stats, scenario))
+        out.update(self._coaching(transcript, stats, scenario))
         return out
 
     # ── Call 1 — the professional rewrite ────────────────────────────────
@@ -166,7 +145,11 @@ Reply with ONLY this JSON, no other text:
 "audience_perception":"2 sentences on how listeners likely perceived them"}}
 
 Include one framework_breakdown entry for EACH part: {parts}"""
-        d = _json(_chat(prompt, 0.3)) or {}
+        try:
+            d = _json(_chat(prompt, 0.3)) or {}
+        except Exception as e:
+            print(f"[FeedbackEngine] breakdown failed: {e}")
+            d = {}
         if not d.get("framework_breakdown"):
             d["framework_breakdown"] = [{"part": p, "status": "weak",
                                          "observation": "Not clearly identified in this attempt.",
@@ -194,7 +177,11 @@ Reply with ONLY this JSON, no other text:
 "motivational_close":"one encouraging sentence"}}
 
 Give 2-3 improvement_points and 2 micro_feedback items."""
-        d = _json(_chat(prompt, 0.3)) or {}
+        try:
+            d = _json(_chat(prompt, 0.3)) or {}
+        except Exception as e:
+            print(f"[FeedbackEngine] coaching failed: {e}")
+            d = {}
         return {
             "improvement_points": d.get("improvement_points", []),
             "micro_feedback": d.get("micro_feedback", []),

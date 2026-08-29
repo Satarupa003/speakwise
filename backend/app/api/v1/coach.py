@@ -23,10 +23,17 @@ async def coach_chat(payload: CoachMessage, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Analysis).where(Analysis.video_id == video_id))
     analysis = result.scalar_one_or_none()
 
-    # History summary from stored comparison (progress trends)
+    # History summary — recompute live against all analyses (progress trends),
+    # falling back to the stored snapshot from analysis time if that fails.
     history_summary = ""
-    if analysis and analysis.comparison and analysis.comparison.get("has_previous"):
-        history_summary = analysis.comparison.get("summary", "")
+    if analysis:
+        try:
+            comparison = await build_comparison(db, analysis)
+        except Exception as mem_err:
+            print(f"[Coach] live comparison failed, using stored snapshot: {mem_err}")
+            comparison = analysis.comparison
+        if comparison and comparison.get("has_previous"):
+            history_summary = comparison.get("summary", "")
 
     engine = _sessions.setdefault(video_id, CoachEngine())
     return await engine.chat(payload.message, analysis=analysis, history_summary=history_summary)

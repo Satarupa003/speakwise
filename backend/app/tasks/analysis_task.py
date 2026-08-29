@@ -63,6 +63,18 @@ async def run_analysis_pipeline(video_id: str, content_type: str = "speech", top
             _store_feedback(analysis, feedback)
             await db.commit()
 
+            # ── Memory: compare with previous session ──────────────────────
+            print("[Pipeline] Building progress comparison...")
+            from app.services.memory_service import build_comparison
+            try:
+                comparison = await build_comparison(db, analysis)
+                analysis.comparison = comparison
+                await db.commit()
+                print(f"[Pipeline] Comparison: {comparison.get('summary', 'n/a')}")
+            except Exception as mem_err:
+                # Non-fatal — coach still works, just without progress history
+                print(f"[Pipeline] Memory comparison failed (non-fatal): {mem_err}")
+
             await _set_status(db, video_id, VideoStatus.COMPLETED, set_processed=True)
             print(f"[Pipeline] Complete for {video_id}. Overall {scores['overall']}")
 
@@ -127,7 +139,6 @@ def _store_feedback(a, fb):
     a.delivery_analysis        = {"observations": fb.get("delivery_observations", [])}
     a.body_language_analysis   = {"observations": fb.get("body_language_observations", [])}
     a.emotional_presence       = fb.get("emotional_presence", {})
-    a.reference_clips          = fb.get("reference_clips", [])
 
 
 async def _set_status(db, video_id, status, set_processed=False, error=None):

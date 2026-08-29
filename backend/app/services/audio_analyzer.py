@@ -8,6 +8,7 @@ Still produces: transcript, segments, WPM, filler words + timestamps,
 pauses, pace sections. Pitch/volume are stubbed at 0.
 """
 
+import asyncio
 import os
 import subprocess
 import tempfile
@@ -37,6 +38,11 @@ class AudioAnalyzer:
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video not found: {video_path}")
 
+        # ffmpeg subprocess + faster-whisper are both blocking (CPU/process-bound) —
+        # run off the event loop so other API requests keep responding meanwhile.
+        return await asyncio.to_thread(self._analyze_sync, video_path)
+
+    def _analyze_sync(self, video_path: str) -> dict[str, Any]:
         print(f"[AudioAnalyzer] Extracting audio from {Path(video_path).name}")
         with tempfile.TemporaryDirectory() as tmp:
             audio_path = os.path.join(tmp, "audio.wav")
